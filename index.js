@@ -6,70 +6,124 @@ try {
       alias: 'l',
       type: 'number',
       default: 20,
-      description: '當電量少於該%數，跳出警告'
+      description: 'Critically Low Battery Notification Percentage'
     })
     .option('detect-interval', {
       alias: 'd',
       type: 'number',
       default: 60,
-      description: '偵測電量的間隔時間 (以秒為單位)'
+      description: 'Detect interval (In seconds)'
     })
   shell = require('shelljs')
   // notifier = new (require('node-notifier')).NotificationCenter()
   notifier = require('node-notifier')
 } catch (error) {
-  throw Error('請先執行 `yarn install`')
+  throw Error('Please run command `yarn install`.')
 }
 
 const gDetectInterval = yargs.argv.detectInterval * 1000
 const gLessThan = yargs.argv.lessThan
-let gCurrentPercentages = []
+const gErrors = []
+let gDeviceInfoList = []
 let maxDeviceCount = 0
 let count = 0
+
+function getDeviceInfoList () {
+  const ioregInfo = shell.exec(`ioreg -l`, { silent: true }).stdout.trim().split('\n')
+  const deviceInfoRangeList = []
+  ioregInfo.forEach((line, beginIndex) => {
+    if  (/\+\-o AppleDeviceManagementHIDEventService  <class AppleDeviceManagementHIDEventService/.test(line)) {
+      let endIndex = beginIndex + 1
+      while (/\+\-o /.test(ioregInfo[endIndex]) === false) ++endIndex
+      deviceInfoRangeList.push([
+        beginIndex,
+        endIndex - 1,
+      ])
+    }
+  })
+
+  const deviceInfoList = []
+  deviceInfoRangeList.forEach(([startIndex, endIndex]) => {
+    let deviceInfo = []
+    while (startIndex < endIndex) {
+      deviceInfo.push(ioregInfo[startIndex++])
+    }
+    deviceInfoList.push(deviceInfo)
+  })
+
+  return deviceInfoList
+}
+
+function getProductOfDeviceInfo (deviceInfo) {
+  return deviceInfo.find(line => /"Product" = /.test(line)).replace(/^.*= "(.*)"$/, '$1')
+}
+
+function getPercentageOfDeviceInfo (deviceInfo) {
+  return parseInt(deviceInfo.find(line => /"BatteryPercent" = /.test(line)).replace(/^.*= (\d+).*$/, '$1'), 10)
+}
+
+function isChargingOfDeviceInfo (deviceInfo) {
+  return deviceInfo.find(line => /"BatteryStatusFlags" = 3/.test(line)) !== undefined
+}
 
 function detect() {
   const result = shell.exec(`ioreg -l | grep BatteryPercent`, { silent: true }).stdout.trim()
 
   maxDeviceCount = result.split('\n').length
   count = (count + 1) % maxDeviceCount
-  gCurrentPercentages = result.split('\n').map(line => parseInt(line.split(' ').slice(-1)[0], 10))
+  gDeviceInfoList = getDeviceInfoList()
 }
 
 async function warn () {
-  return new Promise((resolve, reject) => {
-    try {
-      gCurrentPercentages.forEach(percentage => {
-        if (gLessThan > percentage) {
-          notify(percentage)
-        }
-      })
-      resolve()
-    } catch (error) {
-      console.log(error)
-      reject(error)
+  try {
+    for await (const deviceInfo of gDeviceInfoList) {
+      const percentage = getPercentageOfDeviceInfo(deviceInfo)
+
+      if (gLessThan <= percentage) continue
+      if (isChargingOfDeviceInfo(deviceInfo)) continue
+
+      await notify(deviceInfo)
     }
-  })
+  } catch (error) {
+    gErrors.push(error)
+  }
 }
 
-function notify (percentage) {
-  notifier.notify(
+function notify (deviceInfo) {
+  return new Promise(resolve => notifier.notify(
     {
-      title: `請充電!`,
-      message: `電量剩餘: ${percentage}%`,
+      title: `Please charge your ${ getProductOfDeviceInfo(deviceInfo) }`,
+      message: `Battery percentage: ${ getPercentageOfDeviceInfo(deviceInfo) } %`,
       timeout: gDetectInterval / 1000,
     },
-  )
+    function(error, response) {
+      if (error) gErrors.push(error)
+      resolve()
+    }
+  ))
 }
 
 function log () {
   shell.exec('clear')
-  console.log(`外接設備電量偵測中...`)
-  console.log(`偵測間隔: ${gDetectInterval / 1000}s`)
-  console.log(`低於電量: ${gLessThan}% 將會提醒`)
-  console.log()
-  gCurrentPercentages.forEach(percentage => {
-    console.log(`目前剩餘電量: ${percentage}%`)
+  console.log(`Detecting ...`)
+  console.log(`Detect interval: ${gDetectInterval / 1000} second${gDetectInterval / 1000 !== 1 ? 's' : ''}`)
+  console.log(`Critically Low Battery Notification Percentage: ${gLessThan} %`)
+  console.log('')
+
+  gDeviceInfoList.forEach(deviceInfo => {
+    const product = getProductOfDeviceInfo(deviceInfo)
+    const percentage = getPercentageOfDeviceInfo(deviceInfo)
+    const isCharging = isChargingOfDeviceInfo(deviceInfo)
+    console.log(`Device: ${ product }`)
+    console.log(`Percentage: ${ percentage }`)
+    console.log(`Charging: ${ isCharging }`)
+    console.log('')
   })
+
+  if (gErrors.length) {
+    console.log('Errors:')
+    gErrors.forEach(error => console.log(`  ${error}`))
+  }
 }
 
 async function sleep (ms) {
@@ -80,8 +134,8 @@ async function sleep (ms) {
 
 (async function exec () {
   while (true) {
-    await detect()
-    await log()
+    detect()
+    log()
     await warn()
     await sleep(gDetectInterval)
   }
