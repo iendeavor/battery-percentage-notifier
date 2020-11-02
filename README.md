@@ -1,5 +1,5 @@
 # Battery Percentage Notifier
-[![HitCount](http://hits.dwyl.com/iendeavor/battery-percentage-notifier.svg)](http://hits.dwyl.com/iendeavor/battery-percentage-notifier)
+![visitors](https://visitor-badge.glitch.me/badge?page_id=iendeavor.battery-percentage-notifier)
 
 A notifier for battery percentage of your mouse and keyboard.
 
